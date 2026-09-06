@@ -14,12 +14,6 @@ import requests
 import xinference_client
 from azure.ai.translation.text import TextTranslationClient
 from azure.core.credentials import AzureKeyCredential
-from tencentcloud.common import credential
-from tencentcloud.tmt.v20180321.models import (
-    TextTranslateRequest,
-    TextTranslateResponse,
-)
-from tencentcloud.tmt.v20180321.tmt_client import TmtClient
 
 from pdf2zh.cache import TranslationCache
 from pdf2zh.config import ConfigManager
@@ -763,8 +757,12 @@ class TencentTranslator(BaseTranslator):
     def __init__(
         self, lang_in, lang_out, model, envs=None, ignore_cache=False, **kwargs
     ):
+        from tencentcloud.common import credential
+        from tencentcloud.tmt.v20180321.models import TextTranslateRequest
+        from tencentcloud.tmt.v20180321.tmt_client import TmtClient
+
         self.set_envs(envs)
-        super().__init__(lang_in, lang_out, model)
+        super().__init__(lang_in, lang_out, model, ignore_cache)
         try:
             cred = credential.DefaultCredentialProvider().get_credential()
         except EnvironmentError:
@@ -782,6 +780,8 @@ class TencentTranslator(BaseTranslator):
     _MAX_CHARS = 5000
 
     def _translate_chunk(self, text):
+        from tencentcloud.tmt.v20180321.models import TextTranslateResponse
+
         self.req.SourceText = text
         resp: TextTranslateResponse = self.client.TextTranslate(self.req)
         return resp.TargetText
@@ -885,6 +885,62 @@ class DifyTranslator(BaseTranslator):
 
         # 解析响应
         return response_data.get("answer", "")
+
+
+class OpenCCTranslator(BaseTranslator):
+    """Offline Simplified/Traditional Chinese conversion via OpenCC (no AI)."""
+
+    name = "opencc"
+    envs = {
+        "OPENCC_CONFIG": "s2twp",  # s2t / s2tw / s2twp / s2hk / t2s / ...
+    }
+    # Accept common aliases used by the CLI/GUI
+    lang_map = {
+        "zh": "zh-CN",
+        "zh-cn": "zh-CN",
+        "zh-hans": "zh-CN",
+        "zh-tw": "zh-TW",
+        "zh-hant": "zh-TW",
+        "zh-hk": "zh-HK",
+    }
+
+    # (lang_in, lang_out) → default OpenCC config when model/env not set
+    _PAIR_CONFIG = {
+        ("zh-CN", "zh-TW"): "s2twp",
+        ("zh-CN", "zh-HK"): "s2hk",
+        ("zh-TW", "zh-CN"): "tw2sp",
+        ("zh-HK", "zh-CN"): "hk2s",
+        ("zh-TW", "zh-HK"): "tw2t",
+        ("zh-HK", "zh-TW"): "t2tw",
+    }
+
+    def __init__(
+        self, lang_in, lang_out, model, envs=None, ignore_cache=False, **kwargs
+    ):
+        try:
+            from opencc import OpenCC
+        except ImportError as e:
+            raise ImportError(
+                "opencc is not installed. Install with: "
+                "pip install opencc-python-reimplemented"
+            ) from e
+        self.envs = copy(self.envs)
+        self.set_envs(envs)
+        # model from `-s opencc:s2tw` overrides env/default
+        config = model or self.envs.get("OPENCC_CONFIG") or None
+        super().__init__(lang_in, lang_out, model or config or "s2twp", ignore_cache)
+        if not config:
+            config = self._PAIR_CONFIG.get(
+                (self.lang_in, self.lang_out),
+                self.envs.get("OPENCC_CONFIG", "s2twp"),
+            )
+        self.opencc_config = config
+        self._cc = OpenCC(config)
+        self.add_cache_impact_parameters("opencc_config", config)
+        logger.info("OpenCC ready with config=%s", config)
+
+    def do_translate(self, text: str) -> str:
+        return self._cc.convert(text)
 
 
 class ArgosTranslator(BaseTranslator):

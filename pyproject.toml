@@ -47,6 +47,9 @@ backend = [
 argostranslate = [
     "argostranslate"
 ]
+opencc = [
+    "opencc-python-reimplemented"
+]
 mcp = [
     "mcp>=1.6.0",
 ]
